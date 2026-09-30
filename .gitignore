@@ -40,3 +40,7 @@ Thumbs.db
 
 # --- Zips / artefatos locais ---
 *.zip
+
+# --- Softwares / instaladores pesados (nunca versionar) ---
+softwares/
+*.msi
