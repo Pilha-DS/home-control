@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: automacao
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: automacao
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          # IMAGE_WEB e substituido no deploy (local: automacao-web:TAG;
+          # via CI: ghcr.io/<owner>/automacao-web:TAG).
+          image: IMAGE_WEB
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: automacao-ingress
+  namespace: automacao
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - automacao.omny.app.br
+      secretName: automacao-omny-tls
+  rules:
+    - host: automacao.omny.app.br
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80

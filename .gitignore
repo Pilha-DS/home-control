@@ -1,0 +1,42 @@
+# --- Segredos / ambiente (NUNCA versionar) ---
+.env
+.env.*
+!.env.example
+!.env.docker.example
+*.pem
+*.key
+*.p12
+*.jks
+
+# --- Java / Maven (backend) ---
+backend/target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# --- Flutter / Dart (home_control) ---
+home_control/build/
+home_control/.dart_tool/
+home_control/.flutter-plugins
+home_control/.flutter-plugins-dependencies
+home_control/.packages
+home_control/pubspec.lock.bak
+**/*.g.dart
+**/*.freezed.dart
+
+# --- Arquivos de build / logs ---
+*.log
+logs/
+*.log.*
+
+# --- IDE / SO ---
+.idea/
+*.iml
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# --- Zips / artefatos locais ---
+*.zip

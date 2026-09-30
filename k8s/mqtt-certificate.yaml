@@ -1,0 +1,12 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mqtt-omny-tls
+  namespace: automacao
+spec:
+  secretName: mqtt-omny-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - mqtt.omny.app.br

@@ -1,0 +1,114 @@
+# Stack completa: MySQL + backend Spring Boot + app Flutter (web/nginx).
+#
+# Subir tudo:
+#   cp .env.docker.example .env
+#   docker compose up -d --build
+#
+# App: http://localhost:8080  (login admin / senha do .env)
+# API direta (debug): http://localhost:8081
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    cpus: "2.0"
+    mem_limit: 1g
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-home_root_secret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-home_control}
+      MYSQL_USER: ${MYSQL_USER:-home}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-home_secret}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-home_root_secret}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # Dá tempo ao graceful shutdown (requisições em andamento) antes do SIGKILL.
+    stop_grace_period: 40s
+    cpus: "2.0"
+    mem_limit: 1g
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8080
+      APP_TRANSPORT: ${APP_TRANSPORT:-java}
+      DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-home_control}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      DB_USERNAME: ${MYSQL_USER:-home}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-home_secret}
+      DB_DRIVER: com.mysql.cj.jdbc.Driver
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-long-random-secret-at-least-32-chars}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ADMIN_SEED_ON_STARTUP: "true"
+# --- MQTT (modo legado: APP_TRANSPORT=mqtt) ---
+# Com APP_TRANSPORT=java (padrao) estas variaveis sao ignoradas.
+      MQTT_HOST: ${MQTT_HOST:-mosquito.omny.tec.br}
+      MQTT_PORT: ${MQTT_PORT:-443}
+      MQTT_USER: ${MQTT_USER:-cardoso}
+      MQTT_PASS: ${MQTT_PASS:-C6m8n4d2d3}
+      MQTT_PATH: ${MQTT_PATH:-/}
+      MQTT_SSL: ${MQTT_SSL:-true}
+      MQTT_URL: ${MQTT_URL:-}
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    # docker compose watch: rebuilda o backend ao alterar o código.
+    develop:
+      watch:
+        - action: rebuild
+          path: ./backend/src
+        - action: rebuild
+          path: ./backend/pom.xml
+
+  web:
+    build:
+      context: ./home_control
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    cpus: "0.5"
+    mem_limit: 256m
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-8080}:80"
+    # docker compose watch: rebuilda o web ao alterar o app Flutter.
+    develop:
+      watch:
+        - action: rebuild
+          path: ./home_control/lib
+        - action: rebuild
+          path: ./home_control/pubspec.yaml
+
+  # Broker MQTT local (opcional). Ative com:
+  #   docker compose --profile local-mqtt up -d
+  mosquitto:
+    profiles: ["local-mqtt"]
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+
+volumes:
+  mysql_data:
+  mosquitto_data:
+  mosquitto_log:

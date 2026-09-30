@@ -1,0 +1,138 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: automacao
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: automacao
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          # IMAGE_BACKEND e substituido no deploy (local: automacao-backend:TAG;
+          # via CI: ghcr.io/<owner>/automacao-backend:TAG).
+          image: IMAGE_BACKEND
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SERVER_PORT
+              value: "8080"
+            - name: APP_TRANSPORT
+              value: java
+            - name: DB_URL
+              value: jdbc:mysql://mysql:3306/home_control?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+            - name: DB_USERNAME
+              value: home
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: automacao-secrets
+                  key: MYSQL_PASSWORD
+            - name: DB_DRIVER
+              value: com.mysql.cj.jdbc.Driver
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: automacao-secrets
+                  key: JWT_SECRET
+            - name: ADMIN_USERNAME
+              value: admin
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: automacao-secrets
+                  key: ADMIN_PASSWORD
+            - name: ADMIN_SEED_ON_STARTUP
+              value: "true"
+            # --- Endurecimento de producao ---
+            # CORS: a UI (automacao.omny.app.br) chama a API em outro host.
+            - name: CORS_ALLOWED_ORIGINS
+              value: https://automacao.omny.app.br
+            # Swagger/OpenAPI desligado em producao.
+            - name: SPRINGDOC_ENABLED
+              value: "false"
+            # Falha a subida se JWT_SECRET/ADMIN_PASSWORD ainda forem os padroes.
+            # TEMPORARIAMENTE false: o secret automacao-secrets ainda tem
+            # ADMIN_PASSWORD='admin123' (sem gerar CrashLoopBackOff na subida).
+            # Troque a senha do admin e volte para "true".
+            - name: APP_STRICT_SECRETS
+              value: "false"
+            - name: MQTT_HOST
+              value: mosquitto
+            - name: MQTT_PORT
+              value: "1883"
+            - name: MQTT_SSL
+              value: "false"
+            - name: MQTT_PATH
+              value: ""
+            - name: MQTT_USER
+              value: ""
+            - name: MQTT_PASS
+              value: ""
+          readinessProbe:
+            # Readiness reflete o banco: se o MySQL cair, o pod sai do balanceamento.
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            # Liveness NAO inclui o banco (senao uma queda do MySQL reinicia o pod em loop).
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 200m
+            limits:
+              memory: 1Gi
+              cpu: "1"
+---
+# Backend público em mqtt.omny.app.br (API / WS / ESP gateway).
+# Mosquitto fica apenas interno (ClusterIP).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend-ingress
+  namespace: automacao
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - mqtt.omny.app.br
+      secretName: mqtt-omny-tls
+  rules:
+    - host: mqtt.omny.app.br
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8080

@@ -1,0 +1,94 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Nao deixa dois deploys rodarem juntos.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    name: Build e push das imagens
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_prefix: ${{ steps.meta.outputs.image_prefix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR exige nome em minusculo (owner pode ter maiuscula).
+      - name: Definir prefixo das imagens
+        id: meta
+        run: |
+          echo "image_prefix=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build e push do backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_prefix }}/automacao-backend:${{ github.sha }}
+
+      - name: Build e push do web (Flutter)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./home_control
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_prefix }}/automacao-web:${{ github.sha }}
+
+  deploy:
+    name: Deploy no K3s
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar acesso SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Aplicar manifests e aguardar rollout
+        env:
+          SERVER: ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}
+          BACKEND_IMAGE: ${{ env.REGISTRY }}/${{ needs.build-and-push.outputs.image_prefix }}/automacao-backend:${{ github.sha }}
+          WEB_IMAGE: ${{ env.REGISTRY }}/${{ needs.build-and-push.outputs.image_prefix }}/automacao-web:${{ github.sha }}
+        run: |
+          SSH="ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes $SERVER"
+
+          echo "==> Imagens: $BACKEND_IMAGE / $WEB_IMAGE"
+
+          # Manifests de infra (raramente mudam). O secret automacao-secrets precisa
+          # existir previamente (bootstrap local: ADMIN_PASSWORD='...' ./deploy/k8s-deploy.sh).
+          for f in k8s/namespace.yaml k8s/mysql.yaml k8s/mosquitto.yaml; do
+            $SSH "kubectl apply -f -" < "$f"
+          done
+
+          sed "s|IMAGE_BACKEND|$BACKEND_IMAGE|g" k8s/backend.yaml | $SSH "kubectl apply -f -"
+          sed "s|IMAGE_WEB|$WEB_IMAGE|g" k8s/web.yaml | $SSH "kubectl apply -f -"
+
+          $SSH "kubectl rollout status deployment/backend -n automacao --timeout=300s"
+          $SSH "kubectl rollout status deployment/web -n automacao --timeout=120s"
+
+      - name: Smoke test (health via ingress)
+        run: |
+          curl -sSf https://mqtt.omny.app.br/health
